@@ -1,57 +1,65 @@
 import os
 import requests
-from flask import Flask, request
+from flask import Flask, request, redirect
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 
-# Variables de entorno
-gemini_api_key = os.environ.get("GEMINI_API_KEY")
-TWILIO_SID = os.environ.get("TWILIO_SID")
-TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN")
-
 app = Flask(__name__)
 
-def llamar_gemini(mensaje, modelo):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={gemini_api_key}"
-    payload = {"contents": [{"parts": [{"text": f"Actúa como Shopping OS. Responde breve y profesional: {mensaje}"}]}]}
-    return requests.post(url, json=payload, timeout=7)
+# Credenciales
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+MELI_ID = os.environ.get("MELI_CLIENT_ID")
+MELI_SECRET = os.environ.get("MELI_CLIENT_SECRET")
+TWILIO_SID = os.environ.get("TWILIO_SID")
+TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN")
+REDIRECT_URI = "https://shopping-os-bot.onrender.com/callback"
+
+# Almacenamiento temporal del token (esto se borrará si el servidor reinicia)
+token_data = {"access_token": None}
+
+@app.route("/auth")
+def auth():
+    return redirect(f"https://auth.mercadolibre.com.mx/authorization?response_type=code&client_id={MELI_ID}&redirect_uri={REDIRECT_URI}")
+
+@app.route("/callback")
+def callback():
+    code = request.args.get("code")
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": MELI_ID,
+        "client_secret": MELI_SECRET,
+        "code": code,
+        "redirect_uri": REDIRECT_URI
+    }
+    res = requests.post("https://api.mercadolibre.com/oauth/token", data=data)
+    token_data["access_token"] = res.json().get("access_token")
+    return "¡Autenticación exitosa! Ya puedes cerrar esta ventana."
+
+def obtener_pedidos():
+    if not token_data["access_token"]: return "No autorizado en Mercado Libre."
+    headers = {"Authorization": f"Bearer {token_data['access_token']}"}
+    res = requests.get("https://api.mercadolibre.com/orders/search/recent", headers=headers)
+    compras = res.json().get("results", [])
+    return str([c['items'][0]['title'] for c in compras[:3]])
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    mensaje_cliente = request.values.get('Body', '').strip()
+    mensaje = request.values.get('Body', '').lower()
     remitente = request.values.get('From', '')
     
-    # 1. Avisamos a Twilio que estamos procesando
-    tw_response = MessagingResponse()
-    tw_response.message("Procesando tu solicitud en Shopping OS...")
-    
-    # 2. Intentamos con varios modelos
-    modelos = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash-lite"]
-    respuesta_ia = "Estamos teniendo alta demanda. Intente en un momento."
+    contexto = ""
+    if "compra" in mensaje or "pedido" in mensaje:
+        contexto = f"Mis últimas compras son: {obtener_pedidos()}"
 
-    for modelo in modelos:
-        try:
-            print(f"🔗 Intentando con {modelo}...")
-            res = llamar_gemini(mensaje_cliente, modelo)
-            if res.status_code == 200:
-                respuesta_ia = res.json()['candidates'][0]['content']['parts'][0]['text']
-                break
-        except Exception as e:
-            print(f"❌ Falló {modelo}: {e}")
+    # Llamada a Gemini
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": f"Actúa como Shopping OS, usa este contexto de compras: {contexto}. Responde al usuario: {mensaje}"}]}]}
+    res = requests.post(url, json=payload)
+    respuesta = res.json()['candidates'][0]['content']['parts'][0]['text']
 
-    # 3. Enviamos la respuesta real por fuera de la conexión de Twilio
-    try:
-        client = Client(TWILIO_SID, TWILIO_TOKEN)
-        client.messages.create(
-            body=f"✨ *Shopping OS*\n\n{respuesta_ia[:1000]}",
-            from_=request.values.get('To', ''),
-            to=remitente
-        )
-    except Exception as e:
-        print(f"❌ Error al enviar mensaje por Twilio: {e}")
-    
-    return str(tw_response)
+    # Enviar respuesta
+    Client(TWILIO_SID, TWILIO_TOKEN).messages.create(body=f"✨ *Shopping OS*\n\n{respuesta}", from_=request.values.get('To', ''), to=remitente)
+    return ""
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
