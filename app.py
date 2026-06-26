@@ -16,8 +16,8 @@ def webhook():
     mensaje_cliente = request.values.get('Body', '').strip()
     print(f"📩 Mensaje recibido: '{mensaje_cliente}'")
     
-    # URL de la API de Gemini (modelo 1.5-flash)
-    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_api_key}"
+    # URL de la API de Gemini (usando la versión latest para evitar errores 404)
+    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={gemini_api_key}"
     
     try:
         # Preparar el prompt para Gemini
@@ -48,6 +48,6 @@ def webhook():
     return str(tw_response)
 
 if __name__ == "__main__":
-    # Render asigna el puerto mediante la variable PORT
+    # Render asigna el puerto mediante la variable PORT, o usamos 10000 por defecto
     port = int(os.environ.get("PORT", 10000)) 
     app.run(host="0.0.0.0", port=port)
